@@ -40,7 +40,8 @@ from tournament_economics import get_points_table, get_prize_table
 from points_to_rank import PointsRankMapper, ENTRY_THRESHOLDS
 from scheduling_constraints import (
     get_scheduling_constraints, get_rank_bracket,
-    MIN_REST_DAYS, TOURNAMENTS_PER_YEAR
+    MIN_REST_DAYS, TOURNAMENTS_PER_YEAR,
+    get_surface_weight
 )
 from travel_costs import TravelCostModel, COUNTRY_CONTINENT
 
@@ -396,10 +397,11 @@ class ScheduleGenerator:
     """
     
     def __init__(self, tournaments_by_week, mandatory_weeks=None,
-                 travel_model=None):
+                 travel_model=None, player_rank=500):
         self.by_week = tournaments_by_week
         self.mandatory_weeks = mandatory_weeks or {}  # {week: tournament}
         self.travel_model = travel_model
+        self.player_rank = player_rank
         self.all_weeks = sorted(set(
             list(self.by_week.keys()) + list(self.mandatory_weeks.keys())
         ))
@@ -477,13 +479,17 @@ class ScheduleGenerator:
                 consecutive = 0
                 continue
             
-            # Pick a tournament (weighted by EV + geographic coherence)
+            # Pick a tournament (weighted by EV + geography + surface season)
             options = self.by_week[week]
             weights = []
             for t in options:
                 name = t.get('tournament_name', '')
                 ev = tournament_evs.get(name, 1.0)
                 base_weight = max(0.1, ev)
+                
+                # Surface seasonal weighting
+                t_surface = t.get('surface', 'Hard')
+                surf_mult = get_surface_weight(t_surface, week, self.player_rank)
                 
                 # Geographic weighting
                 if current_continent is not None:
@@ -495,27 +501,27 @@ class ScheduleGenerator:
                         if not isinstance(t_country, str):
                             t_country = ''
                         if self.travel_model and t_country == self.travel_model.player_country:
-                            geo_mult = 2.0  # Strong preference for home country
+                            geo_mult = 3.0  # Strong preference for home country
                         else:
-                            geo_mult = 1.5  # Preference for same continent
+                            geo_mult = 2.0  # Strong preference for same continent
                     else:
                         # Different continent: check if we can still switch
                         if continent_switches >= max_continent_switches:
-                            geo_mult = 0.02  # Nearly block it (not zero for edge cases)
+                            geo_mult = 0.01  # Nearly block it
                         else:
-                            geo_mult = 0.3  # Penalize but allow
+                            geo_mult = 0.15  # Heavy penalty
                 else:
-                    # First tournament: prefer player's home continent
+                    # First tournament: strongly prefer player's home continent
                     if self.travel_model:
                         t_continent = self._get_continent(t)
                         if t_continent == self.travel_model.player_continent:
-                            geo_mult = 1.5
+                            geo_mult = 3.0
                         else:
-                            geo_mult = 0.5
+                            geo_mult = 0.1  # Rarely start on a different continent
                     else:
                         geo_mult = 1.0
                 
-                weights.append(base_weight * geo_mult)
+                weights.append(base_weight * geo_mult * surf_mult)
             
             # Weighted random selection
             total_w = sum(weights)
@@ -721,7 +727,8 @@ class SeasonalOptimizer:
         
         t0 = time.time()
         generator = ScheduleGenerator(by_week, mandatory_weeks,
-                                      travel_model=self.travel_model)
+                                      travel_model=self.travel_model,
+                                      player_rank=player_rank)
         
         candidates = []
         for i in range(n_schedules):
