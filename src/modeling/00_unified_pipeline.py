@@ -267,7 +267,10 @@ def process_tour(base_path, tour, tier_map):
     # =========================================================================
     print("  [1/5] Loading matches and parsing dates...")
     t0 = time.time()
-    df = pd.read_csv(f"{raw_path}/{tour}_all_matches.csv")
+    match_file = f"{raw_path}/{tour}_all_matches.csv"
+    if not os.path.exists(match_file):
+        match_file += ".gz"
+    df = pd.read_csv(match_file)
     n_total = len(df)
     print(f"    {n_total:,} total rows ({time.time()-t0:.0f}s)")
 
@@ -288,14 +291,17 @@ def process_tour(base_path, tour, tier_map):
         print(f"    Fixed {wrap.sum()} year-boundary dates")
 
     df['start_week_monday'] = df['start_date_parsed'] - pd.to_timedelta(
-        df['start_date_parsed'].dt.dayofweek, unit='d')
+        df['start_date_parsed'].dt.dayofweek, unit='D')
 
     # =========================================================================
     # STEP 2: Join rankings (both pro and junior)
     # =========================================================================
     print("\n  [2/5] Joining rankings...")
     t0 = time.time()
-    rankings = pd.read_csv(f"{raw_path}/{tour}_all_weekly_rankings.csv")
+    rank_file = f"{raw_path}/{tour}_all_weekly_rankings.csv"
+    if not os.path.exists(rank_file):
+        rank_file += ".gz"
+    rankings = pd.read_csv(rank_file)
     rankings['week_date'] = pd.to_datetime(rankings['week_date'])
 
     pro_type = 'ATP' if tour == 'atp' else 'WTA'
@@ -369,7 +375,10 @@ def process_tour(base_path, tour, tier_map):
         print(f"    {df[df['tier'].isna()]['category'].value_counts().head().to_dict()}")
 
     # Demographics
-    profiles = pd.read_csv(f"{raw_path}/{tour}_player_profiles.csv")
+    profile_file = f"{raw_path}/{tour}_player_profiles.csv"
+    if not os.path.exists(profile_file):
+        profile_file += ".gz"
+    profiles = pd.read_csv(profile_file)
     profiles['birth_year_int'] = pd.to_numeric(profiles['birth_year'], errors='coerce')
     birth = profiles.dropna(subset=['birth_year_int'])[['player_id', 'birth_year_int']].copy()
 
