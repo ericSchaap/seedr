@@ -338,9 +338,21 @@ def process_tour(base_path, tour, tier_map):
     df['rank_diff'] = df['opponent_rank'] - df['player_rank']
     df['points_diff'] = df['player_points'] - df['opponent_points']
 
+    # Ranking match type: both_pro, both_junior, mixed, or incomplete
+    df['ranking_match_type'] = np.where(
+        df['player_rank'].isna() | df['opponent_rank'].isna(), 'incomplete',
+        np.where(
+            (df['player_rank_type'] == 'pro') & (df['opponent_rank_type'] == 'pro'), 'both_pro',
+            np.where(
+                (df['player_rank_type'] == 'junior') & (df['opponent_rank_type'] == 'junior'), 'both_junior',
+                'mixed')))
+
     both_ranked = df['player_rank'].notna() & df['opponent_rank'].notna()
     print(f"    Rankings joined ({time.time()-t0:.0f}s)")
     print(f"    Both-ranked: {both_ranked.sum():,} / {n_total:,} ({100*both_ranked.mean():.1f}%)")
+    print(f"    Ranking match types:")
+    for rmt, count in df['ranking_match_type'].value_counts().items():
+        print(f"      {rmt:<15s}: {count:>10,} ({100*count/n_total:.1f}%)")
 
     # =========================================================================
     # STEP 3: Filter to both-ranked only
@@ -410,7 +422,7 @@ def process_tour(base_path, tour, tier_map):
         "set4_w","set4_l","set5_w","set5_l",
         "player_rank","player_points","player_rank_type",
         "opponent_rank","opponent_points","opponent_rank_type",
-        "rank_diff","points_diff",
+        "rank_diff","points_diff","ranking_match_type",
         "player_pro_rank","player_pro_points",
         "player_junior_rank","player_junior_points",
         "opponent_pro_rank","opponent_pro_points",
@@ -429,14 +441,21 @@ def process_tour(base_path, tour, tier_map):
     print(f"    Total rows: {len(df):,}")
     print(f"    Columns: {len(df.columns)}")
 
-    # Win rate monotonicity
-    both = df[df['result'].isin(['W', 'L']) & df['rank_diff'].notna()].copy()
-    both['bucket'] = pd.cut(both['rank_diff'],
-                             bins=[-np.inf, -500, -200, -50, 0, 50, 200, 500, np.inf])
-    wr = both.groupby('bucket', observed=False)['result'].apply(lambda x: (x == 'W').mean())
-    cn = both.groupby('bucket', observed=False)['result'].count()
+    # Ranking match type breakdown
+    print(f"\n    Ranking match types:")
+    for rmt, count in df['ranking_match_type'].value_counts().items():
+        print(f"      {rmt:<15s}: {count:>10,} ({100*count/len(df):.1f}%)")
 
-    print(f"\n    Win rate by rank advantage:")
+    # Win rate monotonicity (both_pro only for clean signal)
+    both_pro = df[(df['result'].isin(['W', 'L'])) & 
+                  (df['ranking_match_type'] == 'both_pro') &
+                  (df['rank_diff'].notna())].copy()
+    both_pro['bucket'] = pd.cut(both_pro['rank_diff'],
+                             bins=[-np.inf, -500, -200, -50, 0, 50, 200, 500, np.inf])
+    wr = both_pro.groupby('bucket', observed=False)['result'].apply(lambda x: (x == 'W').mean())
+    cn = both_pro.groupby('bucket', observed=False)['result'].count()
+
+    print(f"\n    Win rate by rank advantage (both_pro only, n={len(both_pro):,}):")
     for b, w in wr.items():
         print(f"      {str(b):>20s}: {100*w:.1f}%  (n={cn[b]:,})")
 
