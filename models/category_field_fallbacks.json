@@ -1,0 +1,219 @@
+{
+  "ATP 1000": {
+    "median_rank": 56,
+    "p25_rank": 25,
+    "p75_rank": 99,
+    "p10_rank": 9,
+    "p90_rank": 139
+  },
+  "ATP 250": {
+    "median_rank": 96,
+    "p25_rank": 53,
+    "p75_rank": 160,
+    "p10_rank": 30,
+    "p90_rank": 247
+  },
+  "ATP 500": {
+    "median_rank": 56,
+    "p25_rank": 24,
+    "p75_rank": 118,
+    "p10_rank": 12,
+    "p90_rank": 194
+  },
+  "ATP Finals": {
+    "median_rank": 68,
+    "p25_rank": 44,
+    "p75_rank": 101,
+    "p10_rank": 36,
+    "p90_rank": 116
+  },
+  "Boys 16": {
+    "median_rank": 1851,
+    "p25_rank": 1851,
+    "p75_rank": 1851,
+    "p10_rank": 1851,
+    "p90_rank": 1851
+  },
+  "Boys 16 European Championship": {
+    "median_rank": 1762,
+    "p25_rank": 1762,
+    "p75_rank": 1762,
+    "p10_rank": 1762,
+    "p90_rank": 1762
+  },
+  "Boys 16 Masters": {
+    "median_rank": 1764,
+    "p25_rank": 1764,
+    "p75_rank": 1764,
+    "p10_rank": 1764,
+    "p90_rank": 1764
+  },
+  "Boys 18": {
+    "median_rank": 1662,
+    "p25_rank": 1621,
+    "p75_rank": 1725,
+    "p10_rank": 1597,
+    "p90_rank": 1772
+  },
+  "Challenger 100": {
+    "median_rank": 288,
+    "p25_rank": 188,
+    "p75_rank": 408,
+    "p10_rank": 133,
+    "p90_rank": 568
+  },
+  "Challenger 110": {
+    "median_rank": 216,
+    "p25_rank": 135,
+    "p75_rank": 344,
+    "p10_rank": 111,
+    "p90_rank": 455
+  },
+  "Challenger 125": {
+    "median_rank": 244,
+    "p25_rank": 151,
+    "p75_rank": 389,
+    "p10_rank": 106,
+    "p90_rank": 537
+  },
+  "Challenger 175": {
+    "median_rank": 122,
+    "p25_rank": 80,
+    "p75_rank": 250,
+    "p10_rank": 55,
+    "p90_rank": 362
+  },
+  "Challenger 50": {
+    "median_rank": 441,
+    "p25_rank": 324,
+    "p75_rank": 620,
+    "p10_rank": 268,
+    "p90_rank": 817
+  },
+  "Challenger 75": {
+    "median_rank": 346,
+    "p25_rank": 235,
+    "p75_rank": 476,
+    "p10_rank": 172,
+    "p90_rank": 685
+  },
+  "Challenger 80": {
+    "median_rank": 303,
+    "p25_rank": 208,
+    "p75_rank": 414,
+    "p10_rank": 152,
+    "p90_rank": 564
+  },
+  "Challenger 90": {
+    "median_rank": 257,
+    "p25_rank": 185,
+    "p75_rank": 401,
+    "p10_rank": 127,
+    "p90_rank": 528
+  },
+  "Grand Slam (Men's)": {
+    "median_rank": 117,
+    "p25_rank": 46,
+    "p75_rank": 183,
+    "p10_rank": 12,
+    "p90_rank": 227
+  },
+  "J100 Boys": {
+    "median_rank": 1722,
+    "p25_rank": 1715,
+    "p75_rank": 1745,
+    "p10_rank": 1702,
+    "p90_rank": 1750
+  },
+  "J200 Boys": {
+    "median_rank": 1716,
+    "p25_rank": 1625,
+    "p75_rank": 1780,
+    "p10_rank": 1596,
+    "p90_rank": 1828
+  },
+  "J30 Boys": {
+    "median_rank": 1746,
+    "p25_rank": 1746,
+    "p75_rank": 1746,
+    "p10_rank": 1735,
+    "p90_rank": 1746
+  },
+  "J300 Boys": {
+    "median_rank": 1616,
+    "p25_rank": 1433,
+    "p75_rank": 1730,
+    "p10_rank": 1314,
+    "p90_rank": 1857
+  },
+  "J500 Boys": {
+    "median_rank": 1510,
+    "p25_rank": 1242,
+    "p75_rank": 1720,
+    "p10_rank": 1083,
+    "p90_rank": 1845
+  },
+  "J60 Boys": {
+    "median_rank": 1758,
+    "p25_rank": 1758,
+    "p75_rank": 1758,
+    "p10_rank": 1758,
+    "p90_rank": 1758
+  },
+  "JB1 Boys": {
+    "median_rank": 1655,
+    "p25_rank": 1576,
+    "p75_rank": 1738,
+    "p10_rank": 1514,
+    "p90_rank": 1802
+  },
+  "JB2 Boys": {
+    "median_rank": 1665,
+    "p25_rank": 1584,
+    "p75_rank": 1665,
+    "p10_rank": 1584,
+    "p90_rank": 1665
+  },
+  "JB3 Boys": {
+    "median_rank": 1729,
+    "p25_rank": 1729,
+    "p75_rank": 1729,
+    "p10_rank": 1729,
+    "p90_rank": 1729
+  },
+  "JR Grand Slam Boys": {
+    "median_rank": 1316,
+    "p25_rank": 980,
+    "p75_rank": 1678,
+    "p10_rank": 828,
+    "p90_rank": 1863
+  },
+  "JR Masters Boys": {
+    "median_rank": 979,
+    "p25_rank": 839,
+    "p75_rank": 1178,
+    "p10_rank": 687,
+    "p90_rank": 1329
+  },
+  "M15": {
+    "median_rank": 990,
+    "p25_rank": 707,
+    "p75_rank": 1386,
+    "p10_rank": 554,
+    "p90_rank": 1741
+  },
+  "M25": {
+    "median_rank": 740,
+    "p25_rank": 492,
+    "p75_rank": 1208,
+    "p10_rank": 381,
+    "p90_rank": 1631
+  },
+  "Olympic Games (Men's)": {
+    "median_rank": 42,
+    "p25_rank": 17,
+    "p75_rank": 76,
+    "p10_rank": 4,
+    "p90_rank": 133
+  }
+}
