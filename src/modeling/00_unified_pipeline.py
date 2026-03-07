@@ -11,6 +11,10 @@ import gc
 import os
 import sys
 
+# Add modeling directory to path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from birth_dates import BirthDateLookup
+
 # ==============================================================================
 # TIER MAPS
 # ==============================================================================
@@ -386,23 +390,23 @@ def process_tour(base_path, tour, tier_map):
         print(f"    WARNING: {unmapped} unmapped categories")
         print(f"    {df[df['tier'].isna()]['category'].value_counts().head().to_dict()}")
 
-    # Demographics
+    # Demographics (using precise birth dates from rankings, fallback to birth year)
+    rank_file_for_birth = f"{raw_path}/{tour}_all_weekly_rankings.csv"
+    if not os.path.exists(rank_file_for_birth):
+        rank_file_for_birth += ".gz"
     profile_file = f"{raw_path}/{tour}_player_profiles.csv"
     if not os.path.exists(profile_file):
         profile_file += ".gz"
-    profiles = pd.read_csv(profile_file)
-    profiles['birth_year_int'] = pd.to_numeric(profiles['birth_year'], errors='coerce')
-    birth = profiles.dropna(subset=['birth_year_int'])[['player_id', 'birth_year_int']].copy()
 
-    df = df.merge(birth.rename(columns={'birth_year_int': 'player_birth_year'}),
-                  on='player_id', how='left')
-    df = df.merge(birth.rename(columns={'player_id': 'opponent_id',
-                                         'birth_year_int': 'opponent_birth_year'}),
-                  on='opponent_id', how='left')
+    birth_lookup = BirthDateLookup()
+    birth_lookup.load(rank_file_for_birth, profile_file)
 
-    match_year = df['start_date_parsed'].dt.year
-    df['player_age'] = match_year - df['player_birth_year']
-    df['opponent_age'] = match_year - df['opponent_birth_year']
+    df['player_age'] = birth_lookup.compute_ages_fast(df, 'player_id', 'start_date_parsed')
+    df['opponent_age'] = birth_lookup.compute_ages_fast(df, 'opponent_id', 'start_date_parsed')
+
+    player_age_coverage = df['player_age'].notna().mean()
+    opponent_age_coverage = df['opponent_age'].notna().mean()
+    print(f"    Age coverage: player={player_age_coverage:.0%}, opponent={opponent_age_coverage:.0%}")
 
     # =========================================================================
     # REORDER COLUMNS
@@ -427,8 +431,7 @@ def process_tour(base_path, tour, tier_map):
         "player_junior_rank","player_junior_points",
         "opponent_pro_rank","opponent_pro_points",
         "opponent_junior_rank","opponent_junior_points",
-        "player_birth_year","player_age",
-        "opponent_birth_year","opponent_age",
+        "player_age","opponent_age",
     ]
     existing = [c for c in col_order if c in df.columns]
     remaining = [c for c in df.columns if c not in col_order]

@@ -44,6 +44,8 @@ from scheduling_constraints import (
     get_surface_weight
 )
 from travel_costs import TravelCostModel, COUNTRY_CONTINENT
+from points_expiry import PointsExpiryTracker
+from field_prediction import FieldPredictor
 
 
 # ==============================================================================
@@ -65,12 +67,14 @@ class TournamentCalendar:
         
         cols = ['tournament_name', 'category', 'surface', 'location', 'country',
                 'start_date', 'end_date', 'year', 'tier', 'tier_name', 'level',
-                'mandatory', 'round', 'player_rank']
+                'mandatory', 'round', 'player_rank', 'player_rank_type']
         
         df = pd.read_csv(csv_path, usecols=cols, low_memory=False)
         df = df[(df['year'] == year) & (df['level'] == level)]
         
-        # One row per tournament
+        # Field stats from pro-ranked only (exclude junior/mixed)
+        df_pro = df[df['player_rank_type'] == 'pro']
+        
         cal = df.groupby(['tournament_name', 'category']).agg(
             surface=('surface', 'first'),
             location=('location', 'first'),
@@ -82,10 +86,15 @@ class TournamentCalendar:
             mandatory=('mandatory', 'first'),
             n_matches=('round', 'count'),
             rounds=('round', lambda x: sorted(x.unique())),
+        ).reset_index()
+        
+        field_stats = df_pro.groupby(['tournament_name', 'category']).agg(
             median_field_rank=('player_rank', 'median'),
             field_p25=('player_rank', lambda x: x.quantile(0.25)),
             field_p75=('player_rank', lambda x: x.quantile(0.75)),
         ).reset_index()
+        
+        cal = cal.merge(field_stats, on=['tournament_name', 'category'], how='left')
         
         # Parse dates
         cal['start_dt'] = pd.to_datetime(
@@ -173,11 +182,12 @@ class TournamentSimulator:
     """
     
     def __init__(self, win_model=None, field_data_path=None, category_fallback_path=None,
-                 name_to_key_path=None):
+                 name_to_key_path=None, field_predictor=None):
         self.win_model = win_model or WinProbabilityModel()
         self.field_profiles = {}
         self.category_fallbacks = {}
         self.name_to_key = {}
+        self.field_predictor = field_predictor
         
         # Load field profiles (keyed by "location|tier_group")
         if field_data_path and os.path.exists(field_data_path):
@@ -247,13 +257,27 @@ class TournamentSimulator:
         return result
     
     def _generate_field(self, tournament, draw_size, rng_seed=42):
-        """Pre-generate a field of opponent ranks for a tournament."""
+        """Pre-generate a field of opponent ranks for a tournament.
+        Uses historical field predictor when available, falls back to
+        profile-based generation."""
         cache_key = tournament.get('tournament_name', '') + '|' + str(draw_size)
         if not hasattr(self, '_draw_cache'):
             self._draw_cache = {}
         if cache_key in self._draw_cache:
             return self._draw_cache[cache_key]
         
+        # Try historical field predictor first
+        if self.field_predictor is not None:
+            tname = tournament.get('tournament_name', '')
+            start_dt = tournament.get('start_dt')
+            year = start_dt.year if hasattr(start_dt, 'year') else 2025
+            predicted = self.field_predictor.generate_field_ranks(
+                tname, year=year, draw_size=draw_size, seed=rng_seed)
+            if predicted is not None:
+                self._draw_cache[cache_key] = predicted
+                return predicted
+        
+        # Fallback: profile-based generation
         field_profile = self._get_field_profile(tournament)
         median_field = field_profile.get('median_rank', 300)
         field_p25 = field_profile.get('p25_rank', median_field * 0.5)
@@ -565,6 +589,7 @@ class SeasonalOptimizer:
         self.win_model = WinProbabilityModel()
         self.player_country = player_country
         self.travel_model = TravelCostModel(player_country=player_country)
+        self.field_predictor = None
         
         # Default paths relative to this file's location
         model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
@@ -576,14 +601,29 @@ class SeasonalOptimizer:
         if name_to_key_path is None:
             name_to_key_path = os.path.join(model_dir, 'tournament_name_to_key.json')
         
+        self._field_data_path = field_data_path
+        self._category_fallback_path = category_fallback_path
+        self._name_to_key_path = name_to_key_path
+        
         self.simulator = TournamentSimulator(
             self.win_model, field_data_path, category_fallback_path, name_to_key_path)
         self.mapper = PointsRankMapper()
         self.calendar = TournamentCalendar()
     
     def load_calendar(self, csv_path, year=2025):
-        """Load tournament calendar from clean match data."""
+        """Load tournament calendar and historical field predictor."""
         self.calendar.load_from_csv(csv_path, year=year)
+        
+        # Load field predictor from the same data
+        self.field_predictor = FieldPredictor()
+        self.field_predictor.load(csv_path)
+        
+        # Rebuild simulator with field predictor
+        self.simulator = TournamentSimulator(
+            self.win_model, self._field_data_path,
+            self._category_fallback_path, self._name_to_key_path,
+            field_predictor=self.field_predictor)
+        
         return self
     
     def load_synthetic_calendar(self, tournaments):
@@ -597,6 +637,7 @@ class SeasonalOptimizer:
                  n_sims_per_schedule=5000, target_tournaments=None,
                  surface_filter=None, exclude_tournaments=None,
                  max_continent_switches=1,
+                 points_expiry_tracker=None,
                  seed=None, verbose=True):
         """
         Run the full optimization pipeline.
@@ -644,6 +685,8 @@ class SeasonalOptimizer:
             print(f"  Max continent switches: {max_continent_switches}")
             print(f"  Schedules to generate: {n_schedules}")
             print(f"  Sims per schedule: {n_sims_per_schedule}")
+            print(f"  Points expiry: {'exact (tracker)' if points_expiry_tracker else 'flat estimate'}")
+            print(f"  Field prediction: {'historical' if self.field_predictor else 'category profiles'}")
         
         # =====================================================================
         # STEP 1: Build eligible tournament list
@@ -779,16 +822,25 @@ class SeasonalOptimizer:
                 total_prize = 0
                 round_results = []
                 
-                # Estimate weekly points expiry: assume points are spread
-                # roughly evenly across 44 active weeks per year
-                weekly_expiry = player_points / 44.0 if player_points > 0 else 0
+                # Points expiry: use tracker if available, else flat estimate
+                if points_expiry_tracker is not None:
+                    weekly_expiry_map = points_expiry_tracker.get_weekly_expiry_for_window(
+                        planning_start_week, planning_end_week)
+                else:
+                    weekly_expiry_map = None
+                flat_weekly_expiry = player_points / 44.0 if player_points > 0 else 0
                 
                 last_week = None
                 for week, tournament in schedule:
-                    # Estimate points dropping off since last tournament
+                    # Calculate points expiring since last tournament
                     if last_week is not None:
-                        weeks_elapsed = week - last_week
-                        points_expiring = weekly_expiry * weeks_elapsed
+                        if weekly_expiry_map is not None:
+                            points_expiring = sum(
+                                weekly_expiry_map.get(w, 0)
+                                for w in range(last_week + 1, week + 1))
+                        else:
+                            weeks_elapsed = week - last_week
+                            points_expiring = flat_weekly_expiry * weeks_elapsed
                     else:
                         points_expiring = 0
                     last_week = week
@@ -900,6 +952,8 @@ class SeasonalOptimizer:
                 'n_eligible': len(eligible),
                 'n_schedules_generated': len(candidates),
                 'n_sims_per_schedule': n_sims_per_schedule,
+                'has_points_expiry': points_expiry_tracker is not None,
+                'has_field_predictor': self.field_predictor is not None,
                 'total_time_seconds': round(total_time, 1),
             }
         }
