@@ -46,6 +46,8 @@ from scheduling_constraints import (
 from travel_costs import TravelCostModel, COUNTRY_CONTINENT
 from points_expiry import PointsExpiryTracker
 from field_prediction import FieldPredictor
+from entry_fees import get_entry_fee, get_total_tournament_cost
+from qualifying import QualifyingPathway
 
 
 # ==============================================================================
@@ -447,11 +449,13 @@ class ScheduleGenerator:
     """
     
     def __init__(self, tournaments_by_week, mandatory_weeks=None,
-                 travel_model=None, player_rank=500):
+                 travel_model=None, player_rank=500,
+                 surface_preference='follow_season'):
         self.by_week = tournaments_by_week
         self.mandatory_weeks = mandatory_weeks or {}  # {week: tournament}
         self.travel_model = travel_model
         self.player_rank = player_rank
+        self.surface_preference = surface_preference
         self.all_weeks = sorted(set(
             list(self.by_week.keys()) + list(self.mandatory_weeks.keys())
         ))
@@ -538,8 +542,11 @@ class ScheduleGenerator:
                 base_weight = max(0.1, ev)
                 
                 # Surface seasonal weighting
-                t_surface = t.get('surface', 'Hard')
-                surf_mult = get_surface_weight(t_surface, week, self.player_rank)
+                if self.surface_preference == 'no_preference':
+                    surf_mult = 1.0
+                else:
+                    t_surface = t.get('surface', 'Hard')
+                    surf_mult = get_surface_weight(t_surface, week, self.player_rank)
                 
                 # Geographic weighting
                 if current_continent is not None:
@@ -616,6 +623,7 @@ class SeasonalOptimizer:
         self.player_country = player_country
         self.travel_model = TravelCostModel(player_country=player_country)
         self.field_predictor = None
+        self._qualifying = QualifyingPathway()
         
         # Default paths relative to this file's location
         model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
@@ -664,6 +672,9 @@ class SeasonalOptimizer:
                  surface_filter=None, exclude_tournaments=None,
                  max_continent_switches=1,
                  points_expiry_tracker=None,
+                 max_budget=None,
+                 surface_preference='follow_season',
+                 travel_scope='continental',
                  seed=None, verbose=True):
         """
         Run the full optimization pipeline.
@@ -671,20 +682,21 @@ class SeasonalOptimizer:
         Args:
             player_rank: Current ATP ranking
             player_points: Current ranking points total
-            planning_start_week: Start week of planning window
-            planning_end_week: End week of planning window
-            n_schedules: Number of candidate schedules to generate
+            planning_start_week, planning_end_week: Planning window
+            n_schedules: Candidate schedules to generate
             n_sims_per_tournament: Monte Carlo sims for per-tournament EV
             n_sims_per_schedule: Monte Carlo sims for full schedule evaluation
-            target_tournaments: Target number of tournaments (auto if None)
+            target_tournaments: Target number (auto if None)
             surface_filter: List of surfaces to include (None = all)
             exclude_tournaments: Tournament names to exclude
-            max_continent_switches: Max continent changes per schedule (default 1)
-            seed: Random seed for reproducibility
+            max_continent_switches: Max continent changes (default 1)
+            points_expiry_tracker: PointsExpiryTracker for exact expiry
+            max_budget: Maximum total budget in USD (None = no limit)
+            surface_preference: 'follow_season' | 'clay_only' | 'hard_only' |
+                               'grass_only' | 'no_preference'
+            travel_scope: 'national' | 'continental' (default) | 'global'
+            seed: Random seed
             verbose: Print progress
-        
-        Returns:
-            dict with top schedules, per-tournament EVs, and metadata
         """
         t_total = time.time()
         if seed is not None:
@@ -700,6 +712,25 @@ class SeasonalOptimizer:
             target_tournaments = max(3, min(
                 int(target_tournaments * window_weeks / 44), window_weeks - 2))
         
+        # --- Translate user preferences into technical parameters ---
+        
+        # Surface preference -> surface_filter
+        if surface_preference == 'clay_only':
+            surface_filter = ['Clay', 'Clay Indoor']
+        elif surface_preference == 'hard_only':
+            surface_filter = ['Hard', 'Hard Indoor']
+        elif surface_preference == 'grass_only':
+            surface_filter = ['Grass']
+        # 'follow_season' and 'no_preference' keep surface_filter as-is (None = all)
+        
+        # Travel scope -> max_continent_switches and country filter
+        if travel_scope == 'national':
+            max_continent_switches = 0
+            # Will be further filtered in eligible tournaments below
+        elif travel_scope == 'global':
+            max_continent_switches = 3  # Effectively unrestricted
+        # 'continental' keeps the default max_continent_switches
+        
         if verbose:
             print(f"Tennis Tournament Optimizer")
             print(f"{'='*60}")
@@ -708,8 +739,9 @@ class SeasonalOptimizer:
             print(f"  Window: weeks {planning_start_week}-{planning_end_week} "
                   f"({planning_end_week - planning_start_week + 1} weeks)")
             print(f"  Target: {target_tournaments} tournaments")
-            print(f"  Max continent switches: {max_continent_switches}")
-            print(f"  Schedules to generate: {n_schedules}")
+            print(f"  Budget: {'${:,.0f}'.format(max_budget) if max_budget else 'no limit'}")
+            print(f"  Surface: {surface_preference}")
+            print(f"  Travel: {travel_scope} (max {max_continent_switches} continent switches)")
             print(f"  Sims per schedule: {n_sims_per_schedule}")
             print(f"  Points expiry: {'exact (tracker)' if points_expiry_tracker else 'flat estimate'}")
             print(f"  Field prediction: {'historical' if self.field_predictor else 'category profiles'}")
@@ -723,6 +755,12 @@ class SeasonalOptimizer:
         eligible = self.calendar.get_eligible(
             player_rank, planning_start_week, planning_end_week,
             surface_filter, exclude_tournaments)
+        
+        # Apply travel scope filter
+        if travel_scope == 'national':
+            eligible = [t for t in eligible
+                        if isinstance(t.get('country'), str) and
+                        t['country'] == self.player_country]
         
         by_week = self.calendar.group_by_week(eligible)
         
@@ -799,7 +837,8 @@ class SeasonalOptimizer:
         t0 = time.time()
         generator = ScheduleGenerator(by_week, mandatory_weeks,
                                       travel_model=self.travel_model,
-                                      player_rank=player_rank)
+                                      player_rank=player_rank,
+                                      surface_preference=surface_preference)
         
         candidates = []
         for i in range(n_schedules):
@@ -875,9 +914,37 @@ class SeasonalOptimizer:
                     
                     # Check acceptance: randomly determine if player gets in
                     t_name = tournament.get('tournament_name', '')
+                    category = tournament.get('category', '')
+                    surface = tournament.get('surface', 'Hard')
                     accept_prob = tournament_accept.get(t_name, 1.0)
+                    
                     if accept_prob < 1.0 and rng.random() > accept_prob:
-                        # Not accepted — points still expire, but no play
+                        # Not accepted into main draw — try qualifying
+                        if self._qualifying.can_enter_qualifying(category, current_rank):
+                            q_result = self._qualifying.simulate_qualifying(
+                                current_rank, category, surface,
+                                rng=rng, win_model=self.win_model)
+                            
+                            if q_result['qualified']:
+                                # Made it through qualifying — play main draw
+                                result = self.simulator.simulate_once(
+                                    current_rank, tournament, rng)
+                                pts = result['points_earned'] + q_result['qualifying_points']
+                                prize = result['prize_earned'] + q_result['qualifying_prize']
+                                total_points_gained += pts
+                                total_prize += prize
+                                current_points = current_points + pts - points_expiring
+                                current_points = max(0, current_points)
+                                current_rank = self.mapper.points_to_rank(current_points)
+                                round_results.append('Q->' + result['round_reached'])
+                                continue
+                            else:
+                                # Failed qualifying — still earn any qualifying points
+                                total_points_gained += q_result['qualifying_points']
+                                total_prize += q_result['qualifying_prize']
+                                current_points += q_result['qualifying_points']
+                        
+                        # Not accepted and didn't qualify — points still expire
                         current_points = current_points - points_expiring
                         current_points = max(0, current_points)
                         current_rank = self.mapper.points_to_rank(current_points)
@@ -918,10 +985,31 @@ class SeasonalOptimizer:
                 'final_rank_p90': float(np.percentile(sim_final_ranks, 90)),
                 'travel_info': self.travel_model.get_schedule_travel_info(schedule),
             })
-            # Compute net ROI
+            # Compute full costs (travel + entry fees + accommodation)
             sr = schedule_results[-1]
-            sr['travel_cost'] = sr['travel_info']['total_cost']
-            sr['net_prize'] = sr['expected_prize'] - sr['travel_cost']
+            travel_info = sr['travel_info']
+            
+            # Calculate per-tournament costs with entry fees and accom adjustments
+            total_entry_fees = 0
+            total_accom = 0
+            adjusted_travel = 0
+            per_tourn = travel_info.get('per_tournament', [])
+            
+            for idx, (_, t) in enumerate(schedule):
+                cat = t.get('category', '')
+                country = t.get('country', '')
+                continent = COUNTRY_CONTINENT.get(country, 'Europe') if isinstance(country, str) else 'Europe'
+                leg_cost = per_tourn[idx]['cost'] if idx < len(per_tourn) else 1000
+                costs = get_total_tournament_cost(cat, leg_cost, continent)
+                total_entry_fees += costs['entry_fee']
+                total_accom += costs['accommodation']
+                adjusted_travel += costs['travel']
+            
+            sr['travel_cost'] = adjusted_travel
+            sr['entry_fees'] = total_entry_fees
+            sr['accommodation_cost'] = total_accom
+            sr['total_cost'] = adjusted_travel + total_entry_fees + total_accom
+            sr['net_prize'] = sr['expected_prize'] - sr['total_cost']
             # Combined score: points are primary, net_prize breaks ties
             sr['combined_score'] = sr['expected_points'] + sr['net_prize'] / 500.0
         
@@ -934,7 +1022,24 @@ class SeasonalOptimizer:
         if verbose:
             print(f"\n[Step 5] Ranking schedules...")
         
-        # Sort by combined score (points + net ROI)
+        # Apply budget constraint: filter out over-budget schedules
+        if max_budget is not None:
+            all_schedules = list(schedule_results)  # Save original
+            schedule_results = [s for s in schedule_results
+                                if s['total_cost'] <= max_budget]
+            n_filtered = len(all_schedules) - len(schedule_results)
+            if verbose and n_filtered > 0:
+                print(f"  Filtered {n_filtered} schedules over ${max_budget:,.0f} budget")
+            if len(schedule_results) == 0:
+                if verbose:
+                    cheapest = min(s['total_cost'] for s in all_schedules)
+                    print(f"  WARNING: No schedules fit within ${max_budget:,.0f} budget "
+                          f"(cheapest: ${cheapest:,.0f})")
+                    print(f"  Showing 5 cheapest options instead...")
+                # Fall back: sort all by cost, take cheapest
+                schedule_results = sorted(all_schedules, key=lambda x: x['total_cost'])[:20]
+        
+        # Sort by combined score (points primary, net ROI tiebreaker)
         schedule_results.sort(key=lambda x: -x['combined_score'])
         
         # Select top diverse schedules
@@ -954,8 +1059,10 @@ class SeasonalOptimizer:
                       f"median {sched['points_p50']:.0f}")
                 print(f"  Prize:   ${sched['expected_prize']:>7,.0f}  "
                       f"80% CI [${sched['prize_p10']:,.0f} - ${sched['prize_p90']:,.0f}]")
-                print(f"  Travel:  ${sched['travel_cost']:>7,.0f}  "
-                      f"({sched['travel_info']['tier_breakdown']})")
+                print(f"  Costs:   ${sched['total_cost']:>7,.0f}  "
+                      f"(travel ${sched['travel_cost']:,.0f} + "
+                      f"entry ${sched['entry_fees']:,.0f} + "
+                      f"accom ${sched['accommodation_cost']:,.0f})")
                 print(f"  Net ROI: ${sched['net_prize']:>7,.0f}")
                 print(f"  Rank:    {sched['expected_final_rank']:>5.0f}  "
                       f"80% CI [{sched['final_rank_p90']:.0f} - {sched['final_rank_p10']:.0f}]")
@@ -985,6 +1092,9 @@ class SeasonalOptimizer:
                 'player_country': self.player_country,
                 'planning_window': (planning_start_week, planning_end_week),
                 'max_continent_switches': max_continent_switches,
+                'max_budget': max_budget,
+                'surface_preference': surface_preference,
+                'travel_scope': travel_scope,
                 'n_eligible': len(eligible),
                 'n_schedules_generated': len(candidates),
                 'n_sims_per_schedule': n_sims_per_schedule,
