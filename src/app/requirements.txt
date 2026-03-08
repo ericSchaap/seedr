@@ -1,0 +1,6 @@
+# Seedr — Tennis Tournament Optimizer
+# Install: pip install -r requirements.txt
+
+streamlit>=1.30.0
+pandas>=2.0.0
+numpy>=1.24.0
