@@ -306,12 +306,27 @@ class TournamentSimulator:
         self._draw_cache[cache_key] = field
         return field
 
+    # ------------------------------------------------------------------
+    # Empirical unranked opponent rates and win probabilities (2020-2025)
+    # At M15/M25 ~17% of opponents are unranked; ranked players win ~86%.
+    # At Challengers <1%, negligible. At ATP events ~0%.
+    # In later rounds the rate drops because unranked players get eliminated.
+    # ------------------------------------------------------------------
+    UNRANKED_RATE_R1 = {
+        'ITF': 0.17,           # M15 and M25 both map to 'ITF' tier
+        'Challenger': 0.009,
+        'ATP 250': 0.001,
+        'ATP 500': 0.0, 'ATP 1000': 0.0, 'Grand Slam': 0.0,
+    }
+    UNRANKED_WIN_PROB = 0.86  # ranked vs unranked, all rank buckets ~86%
+
     def simulate_once(self, player_rank, tournament, rng=None):
         """
         Simulate one run through a tournament bracket with realistic seeded draw.
         
         Each simulation perturbs the base field by ±15% per opponent to capture
-        week-to-week variation in field strength.
+        week-to-week variation in field strength. Includes correction for unranked
+        opponents at M15/M25 level (empirical: ~17% of opponents, 86% win rate).
         
         Returns:
             dict with round_reached, points_earned, prize_earned
@@ -348,31 +363,34 @@ class TournamentSimulator:
         points_table = get_points_table(category) or {}
         prize_table = get_prize_table(category) or {}
         
+        # Unranked opponent rate for this category (R1 baseline)
+        unranked_r1 = self.UNRANKED_RATE_R1.get(tier_group, 0)
+        
         # Simulate match-by-match with bracket logic
-        # R1: unseeded player likely faces a seed (~25% chance against top seed)
-        # Later rounds: opponents get progressively stronger (survivors)
         round_reached = rounds[0]
         
         for r_idx in range(n_rounds):
             round_reached = rounds[r_idx]
             
-            # Pick opponent based on round
-            # R1: random from the full unseeded portion, or a seed
-            # Later rounds: pick from the stronger portion (survivors)
-            if r_idx == 0:
-                # R1: 25% chance of facing a top-8 seed, otherwise random unseeded
-                if rng.random() < 0.25 and n_seeds > 0:
-                    opp_rank = field[rng.randint(0, n_seeds - 1)]
-                else:
-                    opp_rank = field[rng.randint(n_seeds, len(field) - 1)]
+            # Check if opponent is unranked (probability halves each round
+            # because unranked players get eliminated early)
+            unranked_rate = unranked_r1 * (0.5 ** r_idx)
+            if unranked_rate > 0 and rng.random() < unranked_rate:
+                # Facing an unranked opponent — use empirical win probability
+                p_win = self.UNRANKED_WIN_PROB
             else:
-                # Later rounds: opponent is a "survivor" - pick from top portion
-                # Each round halves the field, survivors are on average stronger
-                survivor_pool_size = max(1, len(field) // (2 ** r_idx))
-                opp_idx = rng.randint(0, survivor_pool_size - 1)
-                opp_rank = field[opp_idx]
-            
-            p_win = self.win_model.predict(player_rank, opp_rank, surface, tier_group)
+                # Facing a ranked opponent — pick from field and use model
+                if r_idx == 0:
+                    if rng.random() < 0.25 and n_seeds > 0:
+                        opp_rank = field[rng.randint(0, n_seeds - 1)]
+                    else:
+                        opp_rank = field[rng.randint(n_seeds, len(field) - 1)]
+                else:
+                    survivor_pool_size = max(1, len(field) // (2 ** r_idx))
+                    opp_idx = rng.randint(0, survivor_pool_size - 1)
+                    opp_rank = field[opp_idx]
+                
+                p_win = self.win_model.predict(player_rank, opp_rank, surface, tier_group)
             
             if rng.random() >= p_win:
                 break
@@ -706,11 +724,39 @@ class SeasonalOptimizer:
         # Determine target tournament count
         if target_tournaments is None:
             bracket = get_rank_bracket(player_rank)
-            target_tournaments = TOURNAMENTS_PER_YEAR[bracket]["median"]
-            # Scale to window size
             window_weeks = planning_end_week - planning_start_week + 1
-            target_tournaments = max(3, min(
-                int(target_tournaments * window_weeks / 44), window_weeks - 2))
+            
+            # Use active-player estimates (filtering out part-year/injured players
+            # who pull the raw median down). These correspond roughly to P60-P65
+            # of the full distribution — what a committed player actually does.
+            ACTIVE_TOURNAMENTS_PER_YEAR = {
+                "top_10": 20, "top_30": 24, "top_50": 25,
+                "51_100": 25, "101_200": 24, "201_500": 22, "500_plus": 12,
+            }
+            active_per_year = ACTIVE_TOURNAMENTS_PER_YEAR[bracket]
+            
+            # Seasonal density factor: weeks 13-26 (clay season) have ~30% more
+            # tournaments per week than the annual average. Weeks 1-12 and 35+
+            # have fewer. This avoids the problem of linear scaling from 44-week
+            # annual totals when the planning window is peak density.
+            mid_week = (planning_start_week + planning_end_week) / 2
+            if 13 <= mid_week <= 26:
+                density_factor = 1.30  # Clay season: peak density
+            elif 27 <= mid_week <= 38:
+                density_factor = 1.15  # Summer hard: above average
+            elif 39 <= mid_week <= 46:
+                density_factor = 1.0   # Indoor: average
+            else:
+                density_factor = 0.85  # Off-season: below average
+            
+            scaled = active_per_year * (window_weeks / 44) * density_factor
+            
+            # Floor: at least ~45% of weeks should have tournaments for an
+            # active player; cap at window_weeks - 2 for minimum rest
+            target_tournaments = max(
+                max(3, int(window_weeks * 0.45)),
+                min(int(scaled), window_weeks - 2)
+            )
         
         # --- Translate user preferences into technical parameters ---
         
@@ -972,15 +1018,21 @@ class SeasonalOptimizer:
                 'expected_points': float(np.mean(sim_points)),
                 'points_p10': float(np.percentile(sim_points, 10)),
                 'points_p20': float(np.percentile(sim_points, 20)),
+                'points_p25': float(np.percentile(sim_points, 25)),
                 'points_p50': float(np.median(sim_points)),
+                'points_p75': float(np.percentile(sim_points, 75)),
                 'points_p80': float(np.percentile(sim_points, 80)),
                 'points_p90': float(np.percentile(sim_points, 90)),
                 'expected_prize': float(np.mean(sim_prizes)),
                 'prize_p10': float(np.percentile(sim_prizes, 10)),
+                'prize_p25': float(np.percentile(sim_prizes, 25)),
+                'prize_p75': float(np.percentile(sim_prizes, 75)),
                 'prize_p90': float(np.percentile(sim_prizes, 90)),
                 'expected_final_rank': float(np.mean(sim_final_ranks)),
                 'final_rank_p10': float(np.percentile(sim_final_ranks, 10)),
                 'final_rank_p20': float(np.percentile(sim_final_ranks, 20)),
+                'final_rank_p25': float(np.percentile(sim_final_ranks, 25)),
+                'final_rank_p75': float(np.percentile(sim_final_ranks, 75)),
                 'final_rank_p80': float(np.percentile(sim_final_ranks, 80)),
                 'final_rank_p90': float(np.percentile(sim_final_ranks, 90)),
                 'travel_info': self.travel_model.get_schedule_travel_info(schedule),

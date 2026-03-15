@@ -25,7 +25,6 @@ sys.path.insert(0, MODELING_DIR)
 from seasonal_optimizer import SeasonalOptimizer
 from travel_costs import TravelCostModel, COUNTRY_CONTINENT
 from points_to_rank import PointsRankMapper
-from entry_fees import get_total_tournament_cost
 
 # ==============================================================================
 # PAGE CONFIG
@@ -277,21 +276,17 @@ def generate_schedule_badge(sched, idx, all_schedules):
     return f"📋 Option {idx + 1}", COLORS['muted'], '#F0F0EA'
 
 
-def compute_per_tournament_costs(schedule, player_country):
-    """Compute entry/travel/hotel breakdown for each tournament."""
-    travel_model = TravelCostModel(player_country)
+def compute_per_tournament_costs(schedule, player_country, home_city=None):
+    """Compute flight/hotel/entry breakdown using distance-based EU Commission model."""
+    travel_model = TravelCostModel(player_country, home_city=home_city)
+    info = travel_model.get_schedule_travel_info(schedule)
     per_tournament = []
-    for _, t in schedule:
-        cat = t.get('category', '')
-        country = t.get('country', '')
-        continent = COUNTRY_CONTINENT.get(country, 'Europe') if isinstance(country, str) else 'Europe'
-        travel_cost = travel_model.estimate_cost(country) if isinstance(country, str) else 1000
-        costs = get_total_tournament_cost(cat, travel_cost, continent)
+    for detail in info['per_tournament']:
         per_tournament.append({
-            'entry': costs['entry_fee'],
-            'travel': costs['travel'],
-            'hotel': costs['accommodation'],
-            'total': costs['total_cost'],
+            'entry': detail.get('entry', 0),
+            'travel': detail.get('flight', 0),
+            'hotel': detail.get('hotel', 0),
+            'total': detail.get('cost', 0),
         })
     return per_tournament
 
@@ -348,22 +343,22 @@ def build_comparison_chart(schedules, schedule_names, metric='points'):
     if metric == 'points':
         data = [{
             'name': n,
-            'p10': s['points_p10'], 'p25': s.get('points_p25', s['points_p20']),
+            'p10': s['points_p10'], 'p25': s['points_p25'],
             'p50': s['points_p50'],
-            'p75': s.get('points_p75', s['points_p80']),
+            'p75': s['points_p75'],
             'p90': s['points_p90'],
             'expected': s['expected_points'],
         } for s, n in zip(schedules, schedule_names)]
         color_band = '#52B788'
         show_zero = False
-    else:  # financial
+    else:  # financial — compute net from actual prize percentiles
         data = [{
             'name': n,
-            'p10': s.get('prize_p10', 0) - s['total_cost'],
-            'p25': s.get('prize_p25_net', s.get('prize_p10', 0) * 1.5 - s['total_cost']),
+            'p10': s['prize_p10'] - s['total_cost'],
+            'p25': s['prize_p25'] - s['total_cost'],
             'p50': s['expected_prize'] - s['total_cost'],
-            'p75': s.get('prize_p75_net', s.get('prize_p90', 0) * 0.7 - s['total_cost']),
-            'p90': s.get('prize_p90', 0) - s['total_cost'],
+            'p75': s['prize_p75'] - s['total_cost'],
+            'p90': s['prize_p90'] - s['total_cost'],
             'expected': s['net_prize'],
         } for s, n in zip(schedules, schedule_names)]
         color_band = '#DAA520'
@@ -434,14 +429,32 @@ def build_comparison_chart(schedules, schedule_names, metric='points'):
 
 def build_round_journey(round_probs, height=120):
     """Build the 'how far you'll likely go' bar chart."""
-    round_order = ['R128', 'R64', 'R32', 'R16', 'QF', 'SF', 'F', 'W']
-    round_labels = ['R128', 'R64', 'R32', 'R16', 'QF', 'SF', 'Final', 'Win']
+    # Simulation uses '1/16' notation; normalize to a single format for lookup
+    SIM_TO_DISPLAY = {
+        '1/64': 'R128', '1/32': 'R64', '1/16': 'R32', '1/8': 'R16',
+        'QF': 'QF', 'SF': 'SF', 'F': 'F', 'W': 'W',
+        # Also accept display-format keys directly
+        'R128': 'R128', 'R64': 'R64', 'R32': 'R32', 'R16': 'R16',
+    }
+    DISPLAY_LABELS = {
+        'R128': 'R128', 'R64': 'R64', 'R32': 'R32', 'R16': 'R16',
+        'QF': 'QF', 'SF': 'SF', 'F': 'Final', 'W': 'Win',
+    }
+    display_order = ['R128', 'R64', 'R32', 'R16', 'QF', 'SF', 'F', 'W']
+
+    # Remap round_probs to display keys
+    mapped = {}
+    for k, v in round_probs.items():
+        dk = SIM_TO_DISPLAY.get(k)
+        if dk:
+            mapped[dk] = v
+
     rounds, probs, labels = [], [], []
-    for r, l in zip(round_order, round_labels):
-        if r in round_probs:
+    for r in display_order:
+        if r in mapped:
             rounds.append(r)
-            probs.append(round_probs[r])
-            labels.append(l)
+            probs.append(mapped[r])
+            labels.append(DISPLAY_LABELS[r])
 
     colors = [f'rgba(45,106,79,{0.25 + p * 0.75})' for p in probs]
     text = [f'{p:.0%}' for p in probs]
@@ -612,9 +625,9 @@ def render_schedule_overview(sched, sched_name, badge_text, badge_color,
                 unsafe_allow_html=True)
     pts_exp = sched['expected_points']
     pts_p10 = sched['points_p10']
-    pts_p25 = sched.get('points_p25', sched['points_p20'])
+    pts_p25 = sched['points_p25']
     pts_p50 = sched['points_p50']
-    pts_p75 = sched.get('points_p75', sched['points_p80'])
+    pts_p75 = sched['points_p75']
     pts_p90 = sched['points_p90']
 
     lcol, rcol = st.columns([5, 1])
@@ -637,18 +650,12 @@ def render_schedule_overview(sched, sched_name, badge_text, badge_color,
     st.markdown('<div class="section-label" style="margin-top:12px">'
                 'Financial outcome range</div>', unsafe_allow_html=True)
     net = sched['net_prize']
-    # Approximate net distribution from sim data
-    fin_p10 = sched.get('prize_p10', 0) - sched['total_cost']
-    fin_p90 = sched.get('prize_p90', 0) - sched['total_cost']
+    # Use actual percentiles from optimizer (now includes prize_p25/p75)
+    fin_p10 = sched['prize_p10'] - sched['total_cost']
+    fin_p25 = sched['prize_p25'] - sched['total_cost']
     fin_p50 = sched['expected_prize'] - sched['total_cost']
-    # Interpolate p25/p75 from raw sims if available
-    raw_prizes = sched.get('sim_prizes_raw', [])
-    if raw_prizes:
-        fin_p25 = float(np.percentile(raw_prizes, 25)) - sched['total_cost']
-        fin_p75 = float(np.percentile(raw_prizes, 75)) - sched['total_cost']
-    else:
-        fin_p25 = fin_p10 * 0.6 + fin_p50 * 0.4
-        fin_p75 = fin_p50 * 0.4 + fin_p90 * 0.6
+    fin_p75 = sched['prize_p75'] - sched['total_cost']
+    fin_p90 = sched['prize_p90'] - sched['total_cost']
 
     net_label = f"+€{net:.0f}" if net >= 0 else f"-€{abs(net):.0f}"
     st.markdown(f'<div style="font-size:11px;font-weight:700;color:#2D6A4F;'
@@ -880,6 +887,35 @@ with st.sidebar:
         help="Used for travel cost and geographic scheduling")
     player_country = country_codes[country_idx]
 
+    home_city = st.text_input(
+        "Home city",
+        value="",
+        placeholder="e.g. Paris, Vienna, Buenos Aires",
+        help="For accurate flight cost estimates (distances to tournament cities)")
+
+    st.divider()
+
+    st.subheader("Weekly Overhead")
+    st.caption("_Costs per week on tour (set to 0 if not applicable)_")
+    oh_col1, oh_col2 = st.columns(2)
+    with oh_col1:
+        overhead_coach = st.number_input(
+            "Coach (€/week)", min_value=0, max_value=5000,
+            value=0, step=100)
+        overhead_physio = st.number_input(
+            "Physio (€/week)", min_value=0, max_value=2000,
+            value=0, step=50)
+    with oh_col2:
+        overhead_food = st.number_input(
+            "Food (€/week)", min_value=0, max_value=1000,
+            value=0, step=50)
+        overhead_other = st.number_input(
+            "Other (€/week)", min_value=0, max_value=2000,
+            value=0, step=50)
+    weekly_overhead = overhead_coach + overhead_physio + overhead_food + overhead_other
+    if weekly_overhead > 0:
+        st.caption(f"_Total overhead: €{weekly_overhead:,}/week on tour_")
+
     st.divider()
 
     st.subheader("Planning Window")
@@ -1063,8 +1099,24 @@ if 'results' in st.session_state:
     schedule_costs = []
     for sched in top_schedules:
         costs = compute_per_tournament_costs(
-            sched['schedule'], meta['player_country'])
+            sched['schedule'], meta['player_country'],
+            home_city=home_city if home_city else None)
         schedule_costs.append(costs)
+
+    # Inject overhead costs into each schedule's totals
+    overhead_per_week = {
+        'coach': overhead_coach, 'physio': overhead_physio,
+        'food': overhead_food, 'other': overhead_other,
+    }
+    for sched in top_schedules:
+        active_weeks = len(set(w for w, _ in sched['schedule']))
+        overhead_total = weekly_overhead * active_weeks
+        sched['overhead_total'] = overhead_total
+        sched['overhead_per_week'] = weekly_overhead
+        sched['active_weeks'] = active_weeks
+        # Adjust total cost and net prize to include overhead
+        sched['total_cost'] = sched['total_cost'] + overhead_total
+        sched['net_prize'] = sched['expected_prize'] - sched['total_cost']
 
     # --- Disclaimer ---
     render_disclaimer()

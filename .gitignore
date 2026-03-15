@@ -33,3 +33,4 @@ outputs/*.pdf
 *.credentials
 *.secret
 config/secrets.yaml
+data/processed/*.csv
